@@ -23,7 +23,7 @@ class DataManager(object):
 
 	def SendMessageToDB(self, sql_query):
 		pdb.set_trace()
-		db = MySQL.connect(host="localhost", user=self.user, passwd=self.password, db="grapesEmbedded")
+		db = MySQL.connect(host=self.localhost, user=self.user, passwd=self.password, db="grapesEmbedded")
 		db_cursor = db.cursor()
 		try:
 			db_cursor.execute(sql_query)
@@ -35,11 +35,11 @@ class DataManager(object):
 	def SaveToLocalDB(self, mediciones):
 		for medicion in mediciones:
 			sql_query = "insert into mediciones(valor, idsensor, fecha, idmagnitud) select {value}, sensores.idsensor, now(), sensores.idmagnitud from sensores where sensores.address = {address}".format(value=medicion['value'], address=medicion['address'])
-			self.SendMessageToDB(sql_query)
+			self.SendMessageToDB(sql_query=sql_query)
 			
 	def SaveToRemoteDB(self, is_https=False):		
 		# Delete data from DB
-		db = MySQL.connect(host="localhost", user=self.user, passwd=self.password, db="grapesEmbedded")
+		db = MySQL.connect(host=self.localhost, user=self.user, passwd=self.password, db="grapesEmbedded")
 		db_cursor = db.cursor()		
 		data = ''
 		try:
@@ -57,18 +57,18 @@ class DataManager(object):
 			raise Exception('Fail to send data to remote DB')
 
 		sql_query = "delete from mediciones"
-		self.SendMessageToDB(sql_query)		
+		self.SendMessageToDB(sql_query=sql_query)		
 		
-	def SendData(self, mediciones):
-		self.SaveToLocalDB(mediciones)
+	def SendData(self, data):
+		self.SaveToLocalDB(mediciones=data)
 		self.SaveToRemoteDB()
 
 	def SetupDB(self):
 		sql_query = "insert into campos (descripcion) select * from (select {id_field}) where not exists (select * from campos) limit 1;".format(id_field=self.id_field)
-		self.SendMessageToDB(sql_query)
+		self.SendMessageToDB(sql_query=sql_query)
 		for device in self.devices:
 			sql_query = "insert into sensores (idCampo,address,gpLat,gpsLong) select {id_field}, {address}, null, null".format(id_field=self.id_field, address=device)
-			self.SendMessageToDB(sql_query)
+			self.SendMessageToDB(sql_query=sql_query)
 		
 
 def main(argv):
@@ -76,16 +76,19 @@ def main(argv):
 	print "		   -The id of the field"
 	print "		   -The server IP address"
 	print "		   -The number of devices"
+	print "		   -MOCKED_VALUES 1 or REAL_VALUES 0"
 	print "		   -The i2c_address of the device"
 	
-	if len(argv) < 4:
+	if len(argv) < 5:
+		print "Not enough parameters"
 		sys.exit()
 	# Extra Data
-	devices = []
+	dev_i2c_address = []
 	id_field = argv[0]
 	server_address = argv[1]
 	number_of_devices = int(argv[2])
-	devices = [ int(argv[i + 3]) for i in range(number_of_devices)]
+	mock_or_real = int(argv[3])
+	dev_i2c_address = [ int(argv[i + 4]) for i in range(number_of_devices)]
 
 	# I2C bus
 	bus = smbus.SMBus(1)
@@ -94,24 +97,28 @@ def main(argv):
 	user = "root"
 	password = "grapes123"
 
-	data_manager = DataManager(user, password, id_field, server_address, devices)
-
+	data_manager = DataManager(user=user, password=password, id_field=id_field, server_address=server_address, devices=dev_i2c_address)
 	data_manager.SetupDB()
 
 	while True:
 		data = []
-		for device in devices:	
+		i = 0
+		for device in dev_i2c_address:	
 			sub_data = {}
-			i = 0
-			# Read values from device
-			#sub_data["value"] = bus.read_byte(device)
-			sub_data["value"] = MOCKED_VALUES[i]
-			i += 1
+			if mock_or_real == 1:
+				# Read mock values
+				sub_data["value"] = MOCKED_VALUES[i]
+				i += 1
+			else:
+				# Read values from device
+				sub_data["value"] = bus.read_byte(device)
+			
 			sub_data["address"] = device
+			# Append device
 			data += [sub_data]
-		
+
 		pdb.set_trace()
-		data_manager.SendData(data)
+		data_manager.SendData(data=data)
 		time.sleep(2)
 
 if __name__ == "__main__":
