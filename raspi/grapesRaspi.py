@@ -9,7 +9,14 @@ import requests
 import pdb
 
 
-MOCKED_VALUES = [1,2,3,4,5,6]
+LOCALHOST = "localhost"
+ID_TEMP = 0
+ID_HUM = 1
+MAGNITUDES = {
+			ID_TEMP : "Temperatura",
+			ID_HUM : "Humedad"
+}
+MOCKED_VALUES = [(ID_TEMP,1),(ID_TEMP,2),(ID_HUM,3),(ID_TEMP,4),(ID_HUM,5),(ID_HUM,6)]
 
 class DataManager(object):
 
@@ -20,9 +27,9 @@ class DataManager(object):
 		self.id_field = id_field
 		self.devices = devices
 		self.server_address = server_address
+		self.localhost = LOCALHOST
 
 	def SendMessageToDB(self, sql_query):
-		pdb.set_trace()
 		db = MySQL.connect(host=self.localhost, user=self.user, passwd=self.password, db="grapesEmbedded")
 		db_cursor = db.cursor()
 		try:
@@ -34,24 +41,42 @@ class DataManager(object):
 
 	def SaveToLocalDB(self, mediciones):
 		for medicion in mediciones:
-			sql_query = "insert into mediciones(valor, idsensor, fecha, idmagnitud) select {value}, sensores.idsensor, now(), sensores.idmagnitud from sensores where sensores.address = {address}".format(value=medicion['value'], address=medicion['address'])
+			sql_query = "insert into mediciones(valor, idsensor, fecha, idmagnitud)\
+ select {value},(select sensores.idsensor from sensores where sensores.address = {address}),\
+ now(), (select magnitudes.IdMagnitud from magnitudes where magnitudes.nombre like '{magnitude}');".format(value=medicion['value'],
+																									 address=medicion['address'],
+																									 magnitude=medicion["magnitude"])
 			self.SendMessageToDB(sql_query=sql_query)
 			
 	def SaveToRemoteDB(self, is_https=False):		
-		# Delete data from DB
+		# Fetch all measurements stored in local database
 		db = MySQL.connect(host=self.localhost, user=self.user, passwd=self.password, db="grapesEmbedded")
 		db_cursor = db.cursor()		
 		data = ''
 		try:
-			sql_query = "select campos.idcampo, mediciones.fecha, mediciones.valor, magnitudes.unidad, magnitudes.nombre from mediciones join sensores on mediciones.idsensor=sensores.idsensor join campos on sensores.idcampo=campos.idcampo join magnitudes on mediciones.idmagnitud=magnitudes.idmagnitud"
+			sql_query = "select campos.uuid, mediciones.fecha, mediciones.valor, magnitudes.nombre, magnitudes.unidad\
+ from mediciones\
+ join sensores on mediciones.idsensor=sensores.idsensor\
+ join campos on sensores.idcampo=campos.idcampo\
+ join magnitudes on mediciones.idmagnitud=magnitudes.idmagnitud;"
 			db_cursor.execute(sql_query)
 			data = db_cursor.fetchall()
 		except:
 			data = "Error reading data from local data base"
 		db.close()
 		
+		measurementsToSend = list()
+		for medicion in data:
+			measurement = dict()
+			measurement["id_campo"] = medicion[0]
+			measurement["fecha_hora"] = str(medicion[1])
+			measurement["valor"] = medicion[2]
+			measurement["magnitud"] = medicion[3]
+			measurement["unidad"] = str(medicion[4])
+			measurementsToSend.append(measurement)
+		
 		protocol = 'https' if is_https else 'http'
-		req = requests.post("{proto}://{address}/api/topSecret".format(proto=protocol, address=self.server_address), data=data)
+		req = requests.post("{proto}://{address}/api/topSecret".format(proto=protocol, address=self.server_address), json=measurementsToSend)
 
 		if req.status_code != 200:
 			raise Exception('Fail to send data to remote DB')
@@ -64,11 +89,13 @@ class DataManager(object):
 		self.SaveToRemoteDB()
 
 	def SetupDB(self):
-		sql_query = "insert into campos (descripcion) select * from (select {id_field}) where not exists (select * from campos) limit 1;".format(id_field=self.id_field)
+		sql_query = "insert into campos (uuid) select * from (select {id_field}) as IDs where not exists (select * from campos) limit 1;".format(id_field=self.id_field)
 		self.SendMessageToDB(sql_query=sql_query)
 		for device in self.devices:
-			sql_query = "insert into sensores (idCampo,address,gpLat,gpsLong) select {id_field}, {address}, null, null".format(id_field=self.id_field, address=device)
-			self.SendMessageToDB(sql_query=sql_query)
+			sql_query = "insert into sensores (idCampo,address,gpsLat,gpsLong)\
+ select * from (select idCampo, {address} as address, null as gpsLat, null as gpsLong from campos where campos.uuid = {id_field}) as dataToAdd\
+ where not exists (select * from sensores where address = {address});".format(id_field=self.id_field, address=device)
+ 			self.SendMessageToDB(sql_query=sql_query)
 		
 
 def main(argv):
@@ -100,6 +127,8 @@ def main(argv):
 	data_manager = DataManager(user=user, password=password, id_field=id_field, server_address=server_address, devices=dev_i2c_address)
 	data_manager.SetupDB()
 
+	pdb.set_trace()
+	
 	while True:
 		data = []
 		i = 0
@@ -107,17 +136,18 @@ def main(argv):
 			sub_data = {}
 			if mock_or_real == 1:
 				# Read mock values
-				sub_data["value"] = MOCKED_VALUES[i]
+				sub_data["magnitude"] = MAGNITUDES[MOCKED_VALUES[i][0]]
+				sub_data["value"] = MOCKED_VALUES[i][1]
 				i += 1
 			else:
 				# Read values from device
+				sub_data["magnitude"] = MAGNITUDES[bus.read_byte(device)]
 				sub_data["value"] = bus.read_byte(device)
 			
 			sub_data["address"] = device
 			# Append device
 			data += [sub_data]
 
-		pdb.set_trace()
 		data_manager.SendData(data=data)
 		time.sleep(2)
 
