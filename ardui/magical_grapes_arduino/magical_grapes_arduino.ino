@@ -41,7 +41,7 @@ void requestEvent() {
   // SENDING BY SERIAL
   Serial.print("[I2C] Sending data. Temperature: ");
   Serial.print(tempC);
-  Serial.print(" Humidity: ");
+  Serial.print("[I2C] Sending data. Humidity: ");
   Serial.println(hum);
 
   // SENDING BY I2C
