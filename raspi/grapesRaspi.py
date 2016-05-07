@@ -5,6 +5,8 @@ import smbus
 import time
 import sys
 import requests
+import serial
+import json 
 
 import pdb
 
@@ -17,6 +19,24 @@ MAGNITUDES = {
 			ID_HUM : "Humedad"
 }
 MOCKED_VALUES = [(ID_TEMP,1),(ID_TEMP,2),(ID_HUM,3),(ID_TEMP,4),(ID_HUM,5),(ID_HUM,6)]
+
+class InvalidConfigException(Exception):
+	'''raised when config data is invalid '''
+
+	def __init__(self, message):
+		self.message = message
+
+	def __str__(self):
+		return repr(self.message)
+
+class ErrorRecievingData(Exception):
+	'''raised when it can't recieve data '''
+
+	def __init__(self, message):
+		self.message = message
+
+	def __str__(self):
+		return repr(self.message)
 
 class DataManager(object):
 
@@ -54,7 +74,7 @@ class DataManager(object):
 		db_cursor = db.cursor()		
 		data = ''
 		try:
-			sql_query = "select campos.uuid, mediciones.fecha, mediciones.valor, magnitudes.nombre, magnitudes.unidad\
+			sql_query = "select campos.idcampo, mediciones.fecha, mediciones.valor, magnitudes.nombre, magnitudes.unidad, sensores.address\
  from mediciones\
  join sensores on mediciones.idsensor=sensores.idsensor\
  join campos on sensores.idcampo=campos.idcampo\
@@ -68,15 +88,20 @@ class DataManager(object):
 		measurementsToSend = list()
 		for medicion in data:
 			measurement = dict()
-			measurement["id_campo"] = medicion[0]
+			measurement["uuid_campo"] = medicion[0]
 			measurement["fecha_hora"] = str(medicion[1])
 			measurement["valor"] = medicion[2]
 			measurement["magnitud"] = medicion[3]
 			measurement["unidad"] = str(medicion[4])
+			measurement["sensor_address"] = str(medicion[5])
 			measurementsToSend.append(measurement)
 		
 		protocol = 'https' if is_https else 'http'
-		req = requests.post("{proto}://{address}/api/topSecret".format(proto=protocol, address=self.server_address), json=measurementsToSend)
+		
+		try:
+			req = requests.post("{proto}://{address}/api/topSecret".format(proto=protocol, address=self.server_address), json=measurementsToSend)
+		except:
+			print "Conection refused"
 
 		if req.status_code != 200:
 			raise Exception('Fail to send data to remote DB')
@@ -96,57 +121,105 @@ class DataManager(object):
  select * from (select idCampo, {address} as address, null as gpsLat, null as gpsLong from campos where campos.uuid = {id_field}) as dataToAdd\
  where not exists (select * from sensores where address = {address});".format(id_field=self.id_field, address=device)
  			self.SendMessageToDB(sql_query=sql_query)
+
+class CommunicationManager(object):
+
+	def __init__(self, devices = ["/dev/ttyACM0"], protocol = "serial"):
+		assert isinstance(devices, list)
+		self.protocol = protocol
+		self.devices = devices
+		self.device_amount = len(devices)
+
+	def Setup(self, *args, **kwargs):
+		import serial
+		if self.protocol == "serial":
+			self.serialPorts = [serial.Serial(
+				port = self.devices[i],
+				baudrate = kwargs["baudrate"] or 9600,
+				parity = serial.PARITY_NONE,
+				stopbits = serial.STOPBITS_ONE,
+				bytesize = serial.EIGHTBITS,
+				timeout = 1
+			) for i in range(self.device_amount)]
+		elif self.protocol == "i2c":
+			self.bus = smbus.SMBus(1)
+			self.devices_addr = self.devices
+		else:
+			raise InvalidConfigException("protocol {} not supported".format(self.protocol));
 		
-
-def main(argv):
-	print "I need: "
-	print "		   -The id of the field"
-	print "		   -The server IP address"
-	print "		   -The number of devices"
-	print "		   -MOCKED_VALUES 1 or REAL_VALUES 0"
-	print "		   -The i2c_address of the device"
+	def RecieveSerial(self, device):
+		for serial in self.serialPorts:
+			if serial.port == device:
+				return serial.readline().strip('\r\n')
+		raise ErrorRecievingData("cannot recieve data from serial port {}".format(device))
 	
-	if len(argv) < 5:
-		print "Not enough parameters"
-		sys.exit()
-	# Extra Data
-	dev_i2c_address = []
-	id_field = argv[0]
-	server_address = argv[1]
-	number_of_devices = int(argv[2])
-	mock_or_real = int(argv[3])
-	dev_i2c_address = [ int(argv[i + 4]) for i in range(number_of_devices)]
+	def RecieveI2C(self, device):
+		tries = 10
+		while tries > 0:
+			try:
+				time.sleep(2)
+				data = bus.read_byte(device)
+			except IOError:
+				tries -= 1
+			else:
+				return data
+		raise ErrorRecievingData("cannot recieve data from i2c port {}".format(device))
+	
+	def Recieve(self, device):
+		if self.protocol == "serial":
+			return self.RecieveSerial(device)
+		elif self.protocol == "i2c":
+			return self.RecieveI2C(device)
+		else:
+			raise InvalidConfigException("bad protocol {}".format(self.protocol))
+		
+def main(argv):
+	
+	mock = False
+	if len(argv) > 0:
+		mock = True if argv[0] == "--mock" else False
+	
+	# Read config File
+	with open("config.json") as config_file:
+		config = json.load(config_file)
 
-	# I2C bus
-	bus = smbus.SMBus(1)
+		id_field = config["field_uuid"]
+		server_address = config["server"]
+		protocol = config["protocol"]
+		devices = config["devices"]
 
-	# Autentication local and remote DB
-	user = "root"
-	password = "grapes123"
+		# Autentication local and remote DB
+		user = config["database"]["user"]
+		password = config["database"]["password"]
 
-	data_manager = DataManager(user=user, password=password, id_field=id_field, server_address=server_address, devices=dev_i2c_address)
+	data_manager = DataManager(user=user, password=password, id_field=id_field, server_address=server_address, devices=devices)
 	data_manager.SetupDB()
 
+	comm_manager = CommunicationManager(devices = devices, protocol = protocol)
+	comm_manager.Setup(baudrate = 9600)
+
 	pdb.set_trace()
-	
+
 	while True:
 		data = []
 		i = 0
-		for device in dev_i2c_address:	
+		for device in devices:	
 			sub_data = {}
-			if mock_or_real == 1:
+			if mock:
 				# Read mock values
 				sub_data["magnitude"] = MAGNITUDES[MOCKED_VALUES[i][0]]
 				sub_data["value"] = MOCKED_VALUES[i][1]
 				i += 1
 			else:
 				# Read values from device
-				sub_data["magnitude"] = MAGNITUDES[bus.read_byte(device)]
-				sub_data["value"] = bus.read_byte(device)
-			
-			sub_data["address"] = device
-			# Append device
-			data += [sub_data]
+				# The sensor sends two measurements at once
+				for i in range(2):
+					time.sleep(2)
+					sub_data["magnitude"] = MAGNITUDES[comm_manager.Recieve(device)]
+					sub_data["value"] = comm_manager.Recieve(device)
+					sub_data["address"] = device
+					# Append measurement
+					data += [sub_data]
 
 		data_manager.SendData(data=data)
 		time.sleep(2)
