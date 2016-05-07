@@ -12,12 +12,14 @@ import pdb
 
 
 LOCALHOST = "localhost"
+
+MAGNITUDE_CODE = {
+	"TEMP": 1,
+	"HUM": 2
+}
+
 ID_TEMP = 0
 ID_HUM = 1
-MAGNITUDES = {
-			ID_TEMP : "Temperatura",
-			ID_HUM : "Humedad"
-}
 MOCKED_VALUES = [(ID_TEMP,1),(ID_TEMP,2),(ID_HUM,3),(ID_TEMP,4),(ID_HUM,5),(ID_HUM,6)]
 
 class InvalidConfigException(Exception):
@@ -62,7 +64,7 @@ class DataManager(object):
 	def SaveToLocalDB(self, mediciones):
 		for medicion in mediciones:
 			sql_query = "insert into mediciones(valor, idsensor, fecha, idmagnitud)\
- select {value},(select sensores.idsensor from sensores where sensores.address = {address}),\
+ select {value},(select sensores.idsensor from sensores where sensores.address like '{address}'),\
  now(), (select magnitudes.IdMagnitud from magnitudes where magnitudes.nombre like '{magnitude}');".format(value=medicion['value'],
 																									 address=medicion['address'],
 																									 magnitude=medicion["magnitude"])
@@ -74,7 +76,7 @@ class DataManager(object):
 		db_cursor = db.cursor()		
 		data = ''
 		try:
-			sql_query = "select campos.idcampo, mediciones.fecha, mediciones.valor, magnitudes.nombre, magnitudes.unidad, sensores.address\
+			sql_query = "select campos.uuid, sensores.address, mediciones.fecha, mediciones.valor, magnitudes.nombre\
  from mediciones\
  join sensores on mediciones.idsensor=sensores.idsensor\
  join campos on sensores.idcampo=campos.idcampo\
@@ -89,11 +91,10 @@ class DataManager(object):
 		for medicion in data:
 			measurement = dict()
 			measurement["uuid_campo"] = medicion[0]
-			measurement["fecha_hora"] = str(medicion[1])
-			measurement["valor"] = medicion[2]
-			measurement["magnitud"] = medicion[3]
-			measurement["unidad"] = str(medicion[4])
-			measurement["sensor_address"] = str(medicion[5])
+			measurement["sensor_address"] = str(medicion[1])
+			measurement["fecha_hora"] = str(medicion[2])
+			measurement["valor"] = medicion[3]
+			measurement["magnitud"] = MAGNITUDE_CODE[medicion[4]]
 			measurementsToSend.append(measurement)
 		
 		protocol = 'https' if is_https else 'http'
@@ -114,12 +115,12 @@ class DataManager(object):
 		self.SaveToRemoteDB()
 
 	def SetupDB(self):
-		sql_query = "insert into campos (uuid) select * from (select {id_field}) as IDs where not exists (select * from campos) limit 1;".format(id_field=self.id_field)
+		sql_query = "insert into campos (uuid) select * from (select '{id_field}') as IDs where not exists (select * from campos) limit 1;".format(id_field=self.id_field)
 		self.SendMessageToDB(sql_query=sql_query)
 		for device in self.devices:
 			sql_query = "insert into sensores (idCampo,address,gpsLat,gpsLong)\
- select * from (select idCampo, {address} as address, null as gpsLat, null as gpsLong from campos where campos.uuid = {id_field}) as dataToAdd\
- where not exists (select * from sensores where address = {address});".format(id_field=self.id_field, address=device)
+ select * from (select idCampo, '{address}' as address, null as gpsLat, null as gpsLong from campos where campos.uuid = '{id_field}') as dataToAdd\
+ where not exists (select * from sensores where address = '{address}');".format(id_field=self.id_field, address=device)
  			self.SendMessageToDB(sql_query=sql_query)
 
 class CommunicationManager(object):
@@ -131,7 +132,6 @@ class CommunicationManager(object):
 		self.device_amount = len(devices)
 
 	def Setup(self, *args, **kwargs):
-		import serial
 		if self.protocol == "serial":
 			self.serialPorts = [serial.Serial(
 				port = self.devices[i],
@@ -172,7 +172,7 @@ class CommunicationManager(object):
 			return self.RecieveI2C(device)
 		else:
 			raise InvalidConfigException("bad protocol {}".format(self.protocol))
-		
+	
 def main(argv):
 	
 	mock = False
@@ -198,7 +198,7 @@ def main(argv):
 	comm_manager = CommunicationManager(devices = devices, protocol = protocol)
 	comm_manager.Setup(baudrate = 9600)
 
-	pdb.set_trace()
+	#pdb.set_trace()
 
 	while True:
 		data = []
@@ -207,19 +207,28 @@ def main(argv):
 			sub_data = {}
 			if mock:
 				# Read mock values
-				sub_data["magnitude"] = MAGNITUDES[MOCKED_VALUES[i][0]]
+				sub_data["magnitude"] = MOCKED_VALUES[i][0]
 				sub_data["value"] = MOCKED_VALUES[i][1]
+				data += [sub_data]
 				i += 1
 			else:
 				# Read values from device
-				# The sensor sends two measurements at once
-				for i in range(2):
-					time.sleep(2)
-					sub_data["magnitude"] = MAGNITUDES[comm_manager.Recieve(device)]
-					sub_data["value"] = comm_manager.Recieve(device)
-					sub_data["address"] = device
-					# Append measurement
-					data += [sub_data]
+				try_again = True
+				while(try_again):
+					try:
+						time.sleep(1)
+						new_data_list = comm_manager.Recieve(device).split(",")
+						for new_data in new_data_list:
+							sub_data = dict()
+							(magnitude, value) = new_data.split(":")
+							sub_data["magnitude"] = magnitude
+							sub_data["value"] = value
+							sub_data["address"] = device
+							# Append measurement
+							data += [sub_data]
+							try_again = False
+					except:
+						try_again = True
 
 		data_manager.SendData(data=data)
 		time.sleep(2)

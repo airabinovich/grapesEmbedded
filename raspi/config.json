@@ -2,7 +2,7 @@
 	"field_uuid": "2c4876a2-9ccf-408e-8fb4-66975e3a23be",
 	"server": "192.168.0.5",
 	"protocol": "serial",
-	"devices": ["/dev/ttyACM0"],
+	"devices": ["/dev/ttyACM2"],
 	"database": {
 		"user": "root",
 		"password": "grapes123"

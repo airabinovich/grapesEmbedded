@@ -4,14 +4,14 @@ use grapesEmbedded;
 
 create table campos(
     idCampo int unsigned not null auto_increment,
-    uuid varchar(50) unique,
+    uuid varchar(50) not null unique,
     primary key(idCampo)
     );
 
 create table sensores(
     idSensor int unsigned not null auto_increment,
     idCampo int unsigned not null,
-    address int unsigned not null unique,
+    address varchar(50) not null unique,
     gpsLat float,
     gpsLong float,
     primary key(idSensor),
