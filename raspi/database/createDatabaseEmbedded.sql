@@ -11,7 +11,7 @@ create table campos(
 create table sensores(
     idSensor int unsigned not null auto_increment,
     idCampo int unsigned not null,
-    address varchar(50) not null unique,
+    address int unsigned not null unique,
     gpsLat float,
     gpsLong float,
     primary key(idSensor),

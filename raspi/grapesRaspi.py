@@ -21,6 +21,7 @@ MAGNITUDE_CODE = {
 ID_TEMP = 0
 ID_HUM = 1
 MOCKED_VALUES = [(ID_TEMP,1),(ID_TEMP,2),(ID_HUM,3),(ID_TEMP,4),(ID_HUM,5),(ID_HUM,6)]
+NEXT_DATA = 'n'
 
 class InvalidConfigException(Exception):
 	'''raised when config data is invalid '''
@@ -91,15 +92,16 @@ class DataManager(object):
 		for medicion in data:
 			measurement = dict()
 			measurement["uuid_campo"] = medicion[0]
-			measurement["sensor_address"] = str(medicion[1])
+			measurement["sensor_address"] = int(medicion[1])
 			measurement["fecha_hora"] = str(medicion[2])
 			measurement["valor"] = medicion[3]
-			measurement["magnitud"] = MAGNITUDE_CODE[medicion[4]]
+			measurement["id_magnitud"] = MAGNITUDE_CODE[medicion[4]]
 			measurementsToSend.append(measurement)
 		
 		protocol = 'https' if is_https else 'http'
 		
 		try:
+			print "Sending data to {}. Data = {}".format(self.server_address, measurementsToSend)
 			req = requests.post("{proto}://{address}/api/topSecret".format(proto=protocol, address=self.server_address), json=measurementsToSend)
 		except:
 			print "Conection refused"
@@ -120,7 +122,7 @@ class DataManager(object):
 		for device in self.devices:
 			sql_query = "insert into sensores (idCampo,address,gpsLat,gpsLong)\
  select * from (select idCampo, '{address}' as address, null as gpsLat, null as gpsLong from campos where campos.uuid = '{id_field}') as dataToAdd\
- where not exists (select * from sensores where address = '{address}');".format(id_field=self.id_field, address=device)
+ where not exists (select * from sensores where address = '{address}');".format(id_field=self.id_field, address=device[0])
  			self.SendMessageToDB(sql_query=sql_query)
 
 class CommunicationManager(object):
@@ -134,12 +136,9 @@ class CommunicationManager(object):
 	def Setup(self, *args, **kwargs):
 		if self.protocol == "serial":
 			self.serialPorts = [serial.Serial(
-				port = self.devices[i],
+				port = self.devices[i][1],
 				baudrate = kwargs["baudrate"] or 9600,
-				parity = serial.PARITY_NONE,
-				stopbits = serial.STOPBITS_ONE,
-				bytesize = serial.EIGHTBITS,
-				timeout = 1
+				timeout = 2
 			) for i in range(self.device_amount)]
 		elif self.protocol == "i2c":
 			self.bus = smbus.SMBus(1)
@@ -150,7 +149,11 @@ class CommunicationManager(object):
 	def RecieveSerial(self, device):
 		for serial in self.serialPorts:
 			if serial.port == device:
-				return serial.readline().strip('\r\n')
+				print "Trying to read"
+				serial.write(NEXT_DATA.encode())
+				lastReadData = serial.readline().strip('\r\n')
+				print "data read = " + lastReadData
+				return lastReadData
 		raise ErrorRecievingData("cannot recieve data from serial port {}".format(device))
 	
 	def RecieveI2C(self, device):
@@ -198,8 +201,6 @@ def main(argv):
 	comm_manager = CommunicationManager(devices = devices, protocol = protocol)
 	comm_manager.Setup(baudrate = 9600)
 
-	#pdb.set_trace()
-
 	while True:
 		data = []
 		i = 0
@@ -217,13 +218,13 @@ def main(argv):
 				while(try_again):
 					try:
 						time.sleep(1)
-						new_data_list = comm_manager.Recieve(device).split(",")
+						new_data_list = comm_manager.Recieve(device[1]).split(",")
 						for new_data in new_data_list:
 							sub_data = dict()
 							(magnitude, value) = new_data.split(":")
 							sub_data["magnitude"] = magnitude
 							sub_data["value"] = value
-							sub_data["address"] = device
+							sub_data["address"] = int(device[0])
 							# Append measurement
 							data += [sub_data]
 							try_again = False
